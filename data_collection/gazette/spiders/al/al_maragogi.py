@@ -1,6 +1,6 @@
 import locale
 from datetime import date, datetime
-from urllib.parse import urlencode
+from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 
 import scrapy
 
@@ -21,33 +21,32 @@ class AlMaragogiSpider(BaseGazetteSpider):
             "BuscaSearch[data_fim]": self.end_date.strftime("%Y-%m-%d"),
             "BuscaSearch[sort]": "data_new",
             "BuscaSearch[modulo]": "diario-oficial",
+            "per-page": 30,
+            "page": 1,
         }
         url = f"{self.start_urls[0]}/busca?{urlencode(params, encoding='utf-8')}"
         yield scrapy.Request(
             url,
-            callback=self.get_last_page,
         )
 
-    def get_last_page(self, response):
-        last_page = 1
-        has_last_page = response.css(
-            "div.publicacao ul > li.last > a::attr(data-page)"
-        ).get()
-        if has_last_page:
-            last_page = int(has_last_page)
+    @staticmethod
+    def __get_edition_number(parts: list, extra_edition: bool) -> str:
+        edition_number = parts[-2] if extra_edition else parts[-1]
+        edition_number = edition_number.split("/")[0]
+        if extra_edition:
+            edition_number = edition_number + "-A"
 
-        for page in range(1, last_page + 1):
-            params = {
-                "BuscaSearch[data_inicio]": self.start_date.strftime("%Y-%m-%d"),
-                "BuscaSearch[data_fim]": self.end_date.strftime("%Y-%m-%d"),
-                "BuscaSearch[sort]": "data_new",
-                "BuscaSearch[modulo]": "diario-oficial",
-                "BuscaSearch[page]": page,
-            }
-            url = f"{self.start_urls[0]}/busca?{urlencode(params, encoding='utf-8')}"
-            yield scrapy.Request(
-                url,
-            )
+        return edition_number
+
+    @staticmethod
+    def __has_page_params(url: ParseResult) -> str | None:
+        query_params = parse_qs(url.query)
+        return query_params.get("BuscaSearch[page]", [None])[0]
+
+    @staticmethod
+    def __get_total_pages(query: str) -> int:
+        params = parse_qs(query)
+        return int(params.get("page", ["0"])[0])
 
     def parse(self, response):
         publications = response.css("div.publicacao > div.box-publicacao")
@@ -55,10 +54,9 @@ class AlMaragogiSpider(BaseGazetteSpider):
             extra_edition = False
             title_el = publication.css("h4 a::text").get()
             data_el = publication.css("div div div::text").getall()[1]
-            edition_number = title_el.strip().split(" ")[-1]
-            if edition_number == "EXTRA":
-                edition_number = title_el.strip().split(" ")[-2]
-                extra_edition = True
+            title_parts = title_el.strip().split(" ")
+            extra_edition = title_parts[-1] == "Extra"
+            edition_number = self.__get_edition_number(title_parts, extra_edition)
 
             item_date = None
 
@@ -76,3 +74,24 @@ class AlMaragogiSpider(BaseGazetteSpider):
                 file_urls=[url],
                 power="executive",
             )
+
+        if not self.__has_page_params(urlparse(response.url)):
+            has_last_page = response.css(
+                "div.publicacao ul > li.last > a::attr(href)"
+            ).get()
+            last_page = self.__get_total_pages(has_last_page.split("/")[-1])
+            for page in range(2, last_page + 1):
+                params = {
+                    "BuscaSearch[data_inicio]": self.start_date.strftime("%Y-%m-%d"),
+                    "BuscaSearch[data_fim]": self.end_date.strftime("%Y-%m-%d"),
+                    "BuscaSearch[sort]": "data_new",
+                    "BuscaSearch[modulo]": "diario-oficial",
+                    "page": page,
+                    "per-page": 30,
+                }
+                url = (
+                    f"{self.start_urls[0]}/busca?{urlencode(params, encoding='utf-8')}"
+                )
+                yield scrapy.Request(
+                    url,
+                )
