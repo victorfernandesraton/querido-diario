@@ -22,7 +22,6 @@ class AlMaragogiSpider(BaseGazetteSpider):
             "BuscaSearch[sort]": "data_new",
             "BuscaSearch[modulo]": "diario-oficial",
             "per-page": 30,
-            "page": 1,
         }
         url = f"{self.start_urls[0]}/busca?{urlencode(params, encoding='utf-8')}"
         yield scrapy.Request(
@@ -41,24 +40,22 @@ class AlMaragogiSpider(BaseGazetteSpider):
     @staticmethod
     def __has_page_params(url: ParseResult) -> str | None:
         query_params = parse_qs(url.query)
-        return query_params.get("BuscaSearch[page]", [None])[0]
+        return query_params.get("page", [None])[0]
 
     @staticmethod
-    def __get_total_pages(query: str) -> int:
-        params = parse_qs(query)
+    def __get_total_pages(response) -> int:
+        query = response.css("div.publicacao ul > li.last > a::attr(href)").get()
+        params = parse_qs(query.split("/")[-1])
         return int(params.get("page", ["0"])[0])
 
     def parse(self, response):
         publications = response.css("div.publicacao > div.box-publicacao")
         for publication in publications:
-            extra_edition = False
             title_el = publication.css("h4 a::text").get()
             data_el = publication.css("div div div::text").getall()[1]
             title_parts = title_el.strip().split(" ")
             extra_edition = title_parts[-1] == "Extra"
             edition_number = self.__get_edition_number(title_parts, extra_edition)
-
-            item_date = None
 
             locale.setlocale(locale.LC_TIME, "pt_BR.UTF-8")
             date_str = data_el.split(",")[-1].strip()
@@ -76,10 +73,7 @@ class AlMaragogiSpider(BaseGazetteSpider):
             )
 
         if not self.__has_page_params(urlparse(response.url)):
-            has_last_page = response.css(
-                "div.publicacao ul > li.last > a::attr(href)"
-            ).get()
-            last_page = self.__get_total_pages(has_last_page.split("/")[-1])
+            last_page = self.__get_total_pages(response)
             for page in range(2, last_page + 1):
                 params = {
                     "BuscaSearch[data_inicio]": self.start_date.strftime("%Y-%m-%d"),
